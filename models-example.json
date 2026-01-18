@@ -1,0 +1,38 @@
+{
+    "qwen3-vl-plus": {
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "xxx"
+    },
+    "qwen-plus": {
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "xxx"
+    },
+    "qwen-flash": {
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "xxx"
+    },
+    "qwen3-max": {
+        "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "api_key": "xxx"
+    },
+    "gemini-3-pro-preview": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "api_key": "xxx"
+    },
+    "gemini-3-flash-preview": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "api_key": "xxx"
+    },
+    "deepseek-chat": {
+        "url": "https://api.deepseek.com/beta",
+        "api_key": "xxx"
+    },
+    "deepseek-reasoner": {
+        "url": "https://api.deepseek.com/beta",
+        "api_key": "xxx"
+    },
+    "azure-computer-vision": {
+        "url": "https://REPLACE-THIS-WITH-UR-ENDPOINT.cognitiveservices.azure.com/computervision/imageanalysis:analyze?api-version=2024-02-01",
+        "Ocp-Apim-Subscription-Key": "xxx"
+    }
+}
