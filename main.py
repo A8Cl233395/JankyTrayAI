@@ -43,9 +43,24 @@ class MainWindow:
         x = screen_width - width - shift
         y = screen_height - height - shift - taskbar_height
         self.root.geometry(f'{width}x{height}+{x}+{y}')
+        self.display_area = scrolledtext.ScrolledText(
+            self.root,
+            wrap=tk.WORD,
+            font=('微软雅黑', 10),
+            height=10,
+        )
+        self.display_area.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+        self.input_area = scrolledtext.ScrolledText(
+            self.root,
+            wrap=tk.WORD,
+            font=('微软雅黑', 10),
+            height=3,
+        )
+        self.input_area.pack(fill=tk.BOTH, expand=False, side=tk.BOTTOM)
+        self.input_area.bind('<Return>', self.on_enter_key)  # Enter键
+        self.input_area.bind('<Control-Return>', lambda e: self.send_message())  # Ctrl+Enter
 
         self.histories = []
-
         if os.path.exists('histories.json'):
             with open('histories.json', 'r', encoding='utf-8') as f:
                 self.histories = json.load(f)
@@ -81,24 +96,18 @@ class MainWindow:
             self.get_active_window_thread = threading.Thread(target=self._get_active_window_loop)
             self.get_active_window_thread.daemon = True
             self.get_active_window_thread.start()
+        
+        self.display_area.tag_configure("user", foreground="#2563eb")
+        self.display_area.tag_configure("assistant", foreground="#059669")
+        self.display_area.tag_configure("thinking", foreground="#6b7280")
+        self.display_area.tag_configure("answering", foreground="#dc2626")
 
-        self.display_area = scrolledtext.ScrolledText(
-            self.root,
-            wrap=tk.WORD,
-            font=('微软雅黑', 10),
-            height=10,
-        )
-        self.display_area.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
-
-        self.input_area = scrolledtext.ScrolledText(
-            self.root,
-            wrap=tk.WORD,
-            font=('微软雅黑', 10),
-            height=3,
-        )
-        self.input_area.pack(fill=tk.BOTH, expand=False, side=tk.BOTTOM)
-        self.input_area.bind('<Return>', self.on_enter_key)  # Enter键
-        self.input_area.bind('<Control-Return>', lambda e: self.send_message())  # Ctrl+Enter
+    def insert_message(self, message: str, tag: str | None = None):
+        """插入消息到显示区域"""
+        if tag:
+            self.display_area.insert(tk.END, message, tag)
+        else:
+            self.display_area.insert(tk.END, message)
 
     def on_enter_key(self, event):
         if event.state & 0x0001:  # Shift被按住
@@ -115,7 +124,8 @@ class MainWindow:
         user_input = self.input_area.get("1.0", tk.END).strip()
         self.input_area.delete("1.0", tk.END)  # 清空输入框
         if user_input:
-            self.insert_message(f"你: {user_input}\n")
+            self.insert_message(f"你: ", "user")
+            self.insert_message(user_input+"\n")
             self.display_area.see(tk.END)  # 滚动到最新消息
             if not hasattr(self, 'chatinstance'):
                 self.new_chat()
@@ -132,9 +142,8 @@ class MainWindow:
                 self.chatinstance.oclient = get_oclient(self.vision_model)
         self.chatinstance.add({"type": "text", "text": user_input})
         self.chatinstance.merge()
-        self.insert_message(f"AI: ")
-        for chunk in self.chatinstance():
-            self.insert_message(chunk)
+        self.insert_message(f"AI: ", "assistant")
+        self.chatinstance()
         self.insert_message("\n")
         self.display_area.see(tk.END)  # 滚动到最新消息
 
@@ -144,9 +153,6 @@ class MainWindow:
         if hasattr(self, 'history_listbox'):
             self.history_listbox.delete(0)
             self.history_listbox.insert(0, self.histories[0]["title"])
-    
-    def insert_message(self, message: str):
-        self.display_area.insert(tk.END, message)  # 显示发送的消息
     
     def open_settings(self):
         if hasattr(self, 'settings_root'):  # 如果窗口已打开
@@ -271,15 +277,17 @@ class MainWindow:
             self.archive_chat()
         self.current_chat_index = index
         messages = self.histories[index]["messages"]
-        self.chatinstance = ChatInstance(self.main_model, messages)
+        self.chatinstance = ChatInstance(self.main_model, messages, mainwindow=self)
         self.display_area.delete(1.0, tk.END)
         for message in messages:
             if message["role"] == "user":
                 text = message['content'][-1]['text']
                 text = text.rsplit("额外内容结束\n---\n", 1)[1] if "额外内容结束\n---\n" in text else text
-                self.display_area.insert(tk.END, f"你: {text}\n")
+                self.insert_message(f"你: ", "user")
+                self.insert_message(text+"\n")
             else:
-                self.display_area.insert(tk.END, f"AI: {message['content']}\n")
+                self.insert_message(f"AI: ", "assistant")
+                self.insert_message(message['content']+"\n")
         
         for message in messages:
             if message["role"] == "user":
@@ -296,7 +304,7 @@ class MainWindow:
             self.root.deiconify()
     
     def new_chat(self):
-        self.chatinstance = ChatInstance(self.main_model)
+        self.chatinstance = ChatInstance(self.main_model, mainwindow=self)
         self.current_chat_index = 0
         for i in self.manual_extra_data:
             if i["type"] == "image_url":
@@ -529,10 +537,11 @@ class TrayIcon:
         self.icon.run()
 
 class ChatInstance:
-    def __init__(self, model, messages: list[dict] | None = None):
+    def __init__(self, model, messages: list[dict] | None = None, mainwindow: MainWindow = None):
         self.oclient = get_oclient(model)
         self.model = model
         self.messages: list[dict] = messages if messages else []
+        self.mainwindow = mainwindow
 
     def ai(self):
         completion = self.oclient.chat.completions.create(
@@ -554,14 +563,14 @@ class ChatInstance:
             if hasattr(delta, "reasoning_content") and delta.reasoning_content:
                 if not is_thinking:
                     is_thinking = True
-                    yield "---Thinking---\n"
-                yield delta.reasoning_content
+                    self.mainwindow.insert_message("\n---Thinking---\n", tag="thinking")
+                self.mainwindow.insert_message(delta.reasoning_content)
             elif hasattr(delta, "content") and delta.content:
                 if is_thinking and not is_answering:
                     is_answering = True
-                    yield "\n---Answering---\n"
+                    self.mainwindow.insert_message("\n---Answering---\n", tag="answering")
                 full_content += delta.content
-                yield delta.content
+                self.mainwindow.insert_message(delta.content)
         self.messages.append({"role": "assistant", "content": full_content})
 
     def new(self):
