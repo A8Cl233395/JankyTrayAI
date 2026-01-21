@@ -1,4 +1,5 @@
 models.json
-histories.json
 settings.json
+history_titles.json
+histories/
 indev

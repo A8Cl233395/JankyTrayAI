@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 150px;
+      height: 80px;
+      margin: 0;
+      padding: 8px;
+      font-family: Arial, sans-serif;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    #status {
+      text-align: center;
+      line-height: 1.3;
+      max-width: 100%;
+      word-wrap: break-word;
+    }
+    
+    .loading { color: #666; }
+    .success { color: #2ecc71; }
+    .error { color: #e74c3c; }
+  </style>
+</head>
+<body>
+  <div id="status">发送中...</div>
+  <script src="popup.js"></script>
+</body>
+</html>

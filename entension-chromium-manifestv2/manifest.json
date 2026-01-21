@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "页面文本发送器",
+  "version": "1.0",
+  "description": "点击发送当前页面文本到本地服务",
+  
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  
+  "host_permissions": [
+    "http://localhost:24981/"
+  ],
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon.png"
+    }
+  }
+}

@@ -1,34 +1,4 @@
-import base64
-from ctypes import windll
-import os
-import time
-from io import BytesIO
-import chardet
-from openai import OpenAI
-import tkinter as tk
-from tkinter import scrolledtext, ttk
-import threading
-from pystray import Icon, MenuItem, Menu
-from PIL import Image, ImageGrab
-import json
-import pygetwindow as gw
-import win32gui
-import win32ui
-import requests
-import win32clipboard
-import win32con
-from hashlib import md5
-from tkinterdnd2 import DND_FILES, TkinterDnD
-import re
-
-oclients = {}
-
-if os.path.exists('models.json'):
-    with open('models.json', 'r', encoding='utf-8') as f:
-        models = json.load(f)
-    del f
-else:
-    raise FileNotFoundError("models.json not found")
+from individual_modules import *
 
 class MainWindow:
     def __init__(self, width=200, height=300, shift=10, taskbar_height=60):
@@ -60,32 +30,40 @@ class MainWindow:
         self.input_area.bind('<Return>', self.on_enter_key)  # Enter键
         self.input_area.bind('<Control-Return>', lambda e: self.send_message())  # Ctrl+Enter
 
-        self.histories = []
-        if os.path.exists('histories.json'):
-            with open('histories.json', 'r', encoding='utf-8') as f:
-                self.histories = json.load(f)
-            del f
-        
+        self.history_titles= []
+        if not os.path.exists('saves/histories'):
+            os.makedirs('saves/histories')
+        self.history_files = os.listdir('saves/histories')
+        self.history_cache = LRUCache(50)
+
+        if os.path.exists('saves/history_titles.json'):
+            with open('saves/history_titles.json', 'r', encoding='utf-8') as f:
+                self.history_titles: list = json.load(f)
+        self.history_titles.reverse()
+        self.history_files.reverse()
+
         self.last_active_window = None
         self.manual_extra_data = []
 
         self.last_clipboard_data = []
         self.current_chat_index = -1
 
-        self.is_feature_auto_vision_mode = True
+        self.is_feature_auto_vision_mode_enable = True
         self.is_feature_screenshot_enable = False
         self.is_feature_clipboard_enable = False
+        self.is_feature_browser_backend_enable = False
         self.main_model = "deepseek-chat"
         self.assist_model = "qwen-flash"
         self.vision_model = "qwen3-vl-plus-2025-12-19"
 
-        if os.path.exists('settings.json'):
-            with open('settings.json', 'r', encoding='utf-8') as f:
+        if os.path.exists('saves/settings.json'):
+            with open('saves/settings.json', 'r', encoding='utf-8') as f:
                 settings = json.load(f)
             del f
-            self.is_feature_auto_vision_mode = settings["is_feature_auto_vision_mode"]
+            self.is_feature_auto_vision_mode_enable = settings["is_feature_auto_vision_mode_enable"]
             self.is_feature_screenshot_enable = settings["is_feature_screenshot_enable"]
             self.is_feature_clipboard_enable = settings["is_feature_clipboard_enable"]
+            self.is_feature_browser_backend_enable = settings["is_feature_browser_backend_enable"]
             self.main_model = settings["main_model"]
             self.assist_model = settings["assist_model"]
             self.vision_model = settings["vision_model"]
@@ -96,6 +74,10 @@ class MainWindow:
             self.get_active_window_thread = threading.Thread(target=self._get_active_window_loop)
             self.get_active_window_thread.daemon = True
             self.get_active_window_thread.start()
+        
+        if self.is_feature_browser_backend_enable:
+            self.browser_backend = WebServer(self)
+            self.browser_backend.run_server()
         
         self.display_area.tag_configure("user", foreground="#2563eb")
         self.display_area.tag_configure("assistant", foreground="#059669")
@@ -128,8 +110,10 @@ class MainWindow:
             self.insert_message(user_input+"\n")
             self.display_area.see(tk.END)  # 滚动到最新消息
             if not hasattr(self, 'chatinstance'):
-                self.new_chat()
-                threading.Thread(target=self._generate_chat_title, args=(user_input,)).start()
+                if bool(self.display_area.get("1.0", "end-1c").strip()):
+                    self.new_chat(user_input)
+                else: # 已选择历史记录，懒加载，不初始化
+                    self.new_chat()
             self.generate_response_thread = threading.Thread(target=self._generate_and_insert_response, args=(user_input,))
             self.generate_response_thread.start()
 
@@ -147,12 +131,12 @@ class MainWindow:
         self.insert_message("\n")
         self.display_area.see(tk.END)  # 滚动到最新消息
 
-    def _generate_chat_title(self, user_input: str):
+    def _generate_and_insert_chat_title(self, user_input: str):
         title = ask_ai("你是一个专业的对话标题生成器，你需要根据用户的输入生成一句对话标题。", user_input, model=self.assist_model, prefix="```标题\n", stop="\n```")
-        self.histories[0]["title"] = title
+        self.history_titles[0] = title
         if hasattr(self, 'history_listbox'):
             self.history_listbox.delete(0)
-            self.history_listbox.insert(0, self.histories[0]["title"])
+            self.history_listbox.insert(0, title)
     
     def open_settings(self):
         if hasattr(self, 'settings_root'):  # 如果窗口已打开
@@ -168,30 +152,47 @@ class MainWindow:
         
         is_feature_screenshot_enable = tk.BooleanVar(value=self.is_feature_screenshot_enable)
         self.checkbox_screenshot = ttk.Checkbutton(self.settings_root, text="自动添加焦点窗口截图", variable=is_feature_screenshot_enable, command=lambda: self._set_feature_screenshot(is_feature_screenshot_enable.get()))
-        self.checkbox_screenshot.pack(pady=10)
+        self.checkbox_screenshot.pack(pady=5)
 
         is_feature_clipboard_enable = tk.BooleanVar(value=self.is_feature_clipboard_enable)
         self.checkbox_clipboard = ttk.Checkbutton(self.settings_root, text="自动添加剪贴板内容", variable=is_feature_clipboard_enable, command=lambda: self._set_feature_clipboard(is_feature_clipboard_enable.get()))
-        self.checkbox_clipboard.pack(pady=10)
+        self.checkbox_clipboard.pack(pady=5)
 
-        is_feature_auto_vision_mode_enable = tk.BooleanVar(value=self.is_feature_auto_vision_mode)
+        is_feature_auto_vision_mode_enable = tk.BooleanVar(value=self.is_feature_auto_vision_mode_enable)
         self.checkbox_vision_mode = ttk.Checkbutton(self.settings_root, text="自动视觉模式", variable=is_feature_auto_vision_mode_enable, command=lambda: self._set_feature_auto_vision_mode(is_feature_auto_vision_mode_enable.get()))
-        self.checkbox_vision_mode.pack(pady=10)
+        self.checkbox_vision_mode.pack(pady=5)
+
+        is_feature_browser_backend_enable = tk.BooleanVar(value=self.is_feature_browser_backend_enable)
+        self.checkbox_browser_backend = ttk.Checkbutton(self.settings_root, text="浏览器后端", variable=is_feature_browser_backend_enable, command=lambda: self._set_feature_browser_backend(is_feature_browser_backend_enable.get()))
+        self.checkbox_browser_backend.pack(pady=5)
 
         self.entry_main_model = ttk.Entry(self.settings_root, font=('微软雅黑', 10), width=20)
-        self.entry_main_model.pack(pady=10)
+        self.entry_main_model.pack(pady=5)
         self.entry_main_model.insert(0, self.main_model)
         self.entry_main_model.bind('<Return>', lambda event: self._set_main_model(self.entry_main_model.get()))
 
         self.entry_vision_model = ttk.Entry(self.settings_root, font=('微软雅黑', 10), width=20)
-        self.entry_vision_model.pack(pady=10)
+        self.entry_vision_model.pack(pady=5)
         self.entry_vision_model.insert(0, self.vision_model)
         self.entry_vision_model.bind('<Return>', lambda event: self._set_vision_model(self.entry_vision_model.get()))
 
         self.entry_assist_model = ttk.Entry(self.settings_root, font=('微软雅黑', 10), width=20)
-        self.entry_assist_model.pack(pady=10)
+        self.entry_assist_model.pack(pady=5)
         self.entry_assist_model.insert(0, self.assist_model)
         self.entry_assist_model.bind('<Return>', lambda event: self._set_assist_model(self.entry_assist_model.get()))
+    
+    def _set_feature_browser_backend(self, enable: bool):
+        self.is_feature_browser_backend_enable = enable
+        if enable:
+            if not hasattr(self, 'browser_backend'):
+                self.browser_backend = WebServer(self)
+                self.browser_backend.run_server()
+            else:
+                self.browser_backend.run_server()
+        else:
+            if hasattr(self, 'browser_backend'):
+                self.browser_backend.server.shutdown()
+                self.browser_backend.server_thread.join(timeout=1)
     
     def _set_feature_screenshot(self, enable: bool):
         self.is_feature_screenshot_enable = enable
@@ -205,7 +206,7 @@ class MainWindow:
         self.is_feature_clipboard_enable = enable
     
     def _set_feature_auto_vision_mode(self, enable: bool):
-        self.is_feature_auto_vision_mode = enable
+        self.is_feature_auto_vision_mode_enable = enable
     
     def _set_main_model(self, model: str):
         self.main_model = model
@@ -245,8 +246,8 @@ class MainWindow:
         self.history_scrollbar.config(command=self.history_listbox.yview)
         # 绑定选择事件
         self.history_listbox.bind('<<ListboxSelect>>', self._on_history_select)
-        for i in self.histories:
-            self.history_listbox.insert(tk.END, i["title"])
+        for i in self.history_titles:
+            self.history_listbox.insert(tk.END, i)
     
     def _on_history_select(self, event):
         """列表项被选中时的回调函数"""
@@ -262,7 +263,12 @@ class MainWindow:
         if selection:
             index = selection[0]
             self.history_listbox.delete(index)
-            del self.histories[index]
+            del self.history_titles[index]
+            if hasattr(self, 'chatinstance'):
+                del self.chatinstance
+            self.display_area.delete(1.0, tk.END)
+            filename = self.history_files.pop(index)
+            os.remove(f'saves/histories/{filename}')
             self.current_chat_index = max(0, self.current_chat_index - 1)
             self.load_history(self.current_chat_index)
 
@@ -276,8 +282,12 @@ class MainWindow:
         if hasattr(self, 'chatinstance'):
             self.archive_chat()
         self.current_chat_index = index
-        messages = self.histories[index]["messages"]
-        self.chatinstance = ChatInstance(self.main_model, messages, mainwindow=self)
+        filename = self.history_files[index]
+        messages = self.history_cache.get(filename)
+        if not messages:
+            with open(f'saves/histories/{filename}', 'r', encoding='utf-8') as f:
+                messages = json.load(f)
+                self.history_cache.put(filename, messages)
         self.display_area.delete(1.0, tk.END)
         for message in messages:
             if message["role"] == "user":
@@ -303,28 +313,37 @@ class MainWindow:
         else:
             self.root.deiconify()
     
-    def new_chat(self):
-        self.chatinstance = ChatInstance(self.main_model, mainwindow=self)
-        self.current_chat_index = 0
-        for i in self.manual_extra_data:
-            if i["type"] == "image_url":
-                self.is_vision_mode = True
-                break
+    def new_chat(self, user_input = None):
+        if user_input:
+            self.chatinstance = ChatInstance(self.main_model, mainwindow=self)
+            self.current_chat_index = 0
+            for i in self.manual_extra_data:
+                if i["content"]["type"] == "image_url":
+                    self.is_vision_mode = True
+                    break
+            else:
+                self.is_vision_mode = False
+            self.history_titles.insert(0, "新对话")
+            self.history_files.insert(0, int(self.history_files[0]) + 1 if self.history_files else 0)
+            if hasattr(self, 'history_listbox') and self.history_listbox.winfo_exists():
+                self.history_listbox.insert(0, "新对话")
+            threading.Thread(target=self._generate_and_insert_chat_title, args=(user_input,)).start()
         else:
-            self.is_vision_mode = False
-        self.histories.insert(0, {"title": "新对话", "messages": None})
-        if hasattr(self, 'history_listbox') and self.history_listbox.winfo_exists():
-            self.history_listbox.insert(0, self.histories[0]["title"])
-    
+            self.chatinstance = ChatInstance(self.main_model, self.history_cache.get(self.history_files[self.current_chat_index]), mainwindow=self)
+
     def archive_chat(self):
         if hasattr(self, "chatinstance"):
             messages = self.chatinstance.messages
-            self.histories[self.current_chat_index]["messages"] = messages
+            filename = self.history_files[self.current_chat_index] if self.history_files else 0
             del self.chatinstance
+            with open(f'saves/histories/{filename}', 'w', encoding='utf-8') as f:
+                json.dump(messages, f, ensure_ascii=False, indent=4)
+            self.history_cache.put(filename, messages)
 
     def on_newchat(self):
         self.archive_chat()
         self.display_area.delete(1.0, tk.END)
+        self.current_chat_index = 0
     
     def open_add_multimedia(self):
         if hasattr(self, 'add_window'):  # 如果窗口已打开
@@ -363,6 +382,9 @@ class MainWindow:
         self.add_frame.dnd_bind('<<Drop>>', lambda event: threading.Thread(target=self.on_drop, args=(event,)).start())
         self.add_frame.dnd_bind('<<DropEnter>>', self.on_drag_enter)
         self.add_frame.dnd_bind('<<DropLeave>>', self.on_drag_leave)
+        if self.manual_extra_data:
+            for i in self.manual_extra_data:
+                self.add_listbox.insert(tk.END, i["description"])
         self.add_window.mainloop()
     
     def on_drag_enter(self, event):
@@ -382,8 +404,8 @@ class MainWindow:
                 if not os.path.isfile(file_path):
                     continue
                 if file_path.split(".")[-1] in ["zip", "rar", "7z", "tar", "gz", "bz2", "svg", "png", "jpg", "jpeg", "gif", "bmp", "mp3", "wav", "mp4", "flac", "mkv", "mov", "exe", "db", "dll"]:
-                    self.manual_extra_data.append({"type": "text", "text": f"```无法读取的文件\n{file_path}\n```"})
-                    self.add_listbox.insert(tk.END, "文件: " + file_path.split("/")[-1][:30])
+                    self.manual_extra_data.append({"description": "文件: " + file_path.split("/")[-1][:30], "content": {"type": "text", "text": f"```无法读取的文件\n{file_path}\n```"}})
+                    self.add_listbox.insert(tk.END, self.manual_extra_data[-1]["description"])
                     continue
                 with open(file_path, 'rb') as f:
                     raw_data = f.read(1024)
@@ -394,11 +416,11 @@ class MainWindow:
                     with open(file_path, 'r', encoding=encoding, errors='replace') as f:
                         text = f.read()
                     filename = file_path.split("/")[-1]
-                    self.manual_extra_data.append({"type": "text", "text": f"```文件: {filename}\n{text}\n```"})
-                    self.add_listbox.insert(tk.END, "文件: " + filename[:30])
+                    self.manual_extra_data.append({"description": "文件: " + filename[:30], "content": {"type": "text", "text": f"```文件: {filename}\n{text}\n```"}})
+                    self.add_listbox.insert(tk.END, self.manual_extra_data[-1]["description"])
                 else:
-                    self.manual_extra_data.append({"type": "text", "text": f"```无法读取的文件\n{file_path}\n```"})
-                    self.add_listbox.insert(tk.END, "文件: " + file_path.split("/")[-1][:30])
+                    self.manual_extra_data.append({"description": "文件: " + file_path.split("/")[-1][:30], "content": {"type": "text", "text": f"```无法读取的文件\n{file_path}\n```"}})
+                    self.add_listbox.insert(tk.END, self.manual_extra_data[-1]["description"])
     
     def _remove_add_data(self, event):
         selection = self.add_listbox.curselection()
@@ -412,19 +434,19 @@ class MainWindow:
         try:
             if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
                 text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                self.manual_extra_data.append({"type": "text", "text": f"```文本\n{text}\n```"})
-                self.add_listbox.insert(tk.END, "文本: " + text[:30])
+                self.manual_extra_data.append({"description": "文本: " + text[:30], "content": {"type": "text", "text": f"```文本\n{text}\n```"}})
+                self.add_listbox.insert(tk.END, self.manual_extra_data[-1]["description"])
             elif win32clipboard.IsClipboardFormatAvailable(win32con.CF_DIB):
                 image = ImageGrab.grabclipboard()
                 if image is not None:
-                    if not self.is_feature_auto_vision_mode:
+                    if not self.is_feature_auto_vision_mode_enable:
                         text = ocr_image_azure(image)
-                        self.manual_extra_data.append({"type": "text", "text": f"```图片上的文本\n{text}\n```"})
-                        self.add_listbox.insert(tk.END, "图片: " + text[:30].replace("\n", " "))
+                        self.manual_extra_data.append({"description": "图片: " + text[:30].replace("\n", " "), "content": {"type": "text", "text": f"```图片上的文本\n{text}\n```"}})
+                        self.add_listbox.insert(tk.END, self.manual_extra_data[-1]["description"])
                     else:
                         self.is_vision_mode = True
-                        self.manual_extra_data.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_to_b64(image)}"}})
-                        self.add_listbox.insert(tk.END, "图片")
+                        self.manual_extra_data.append({"description": "图片", "content": {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_to_b64(image)}"}}})
+                        self.add_listbox.insert(tk.END, self.manual_extra_data[-1]["description"])
         except Exception as e:
             print(e)
         finally:
@@ -441,7 +463,7 @@ class MainWindow:
                 current_md5 = md5(image.tobytes()).hexdigest()
                 if current_md5 not in self.last_clipboard_data:
                     current_clipboard_data.append(current_md5)
-                    if not self.is_feature_auto_vision_mode:
+                    if not self.is_feature_auto_vision_mode_enable:
                         text = ocr_image_azure(image)
                         self.chatinstance.add({"type": "text", "text": f"```自动插入: 最后一个窗口上的文本\n{text}\n```"})
                     else:
@@ -462,7 +484,7 @@ class MainWindow:
                         current_md5 = md5(image.tobytes()).hexdigest()
                         current_clipboard_data.append(current_md5)
                         if current_md5 not in self.last_clipboard_data:
-                            if not self.is_feature_auto_vision_mode:
+                            if not self.is_feature_auto_vision_mode_enable:
                                 text = ocr_image_azure(image)
                                 self.chatinstance.add({"type": "text", "text": f"```自动插入: 剪贴板中图片上的文本\n{text}\n```"})
                             else:
@@ -477,9 +499,10 @@ class MainWindow:
                     pass
         self.last_clipboard_data = current_clipboard_data
 
-        if hasattr(self, 'add_window'): # 处理手动添加的内容
-            self.chatinstance.messages[-1]["content"].extend(self.manual_extra_data)
-            self.add_listbox.delete(0, tk.END)
+        if self.manual_extra_data:
+            self.chatinstance.messages[-1]["content"].extend([item["content"] for item in self.manual_extra_data])
+            if hasattr(self, 'add_window'): # 处理手动添加的内容
+                self.add_listbox.delete(0, tk.END)
             self.manual_extra_data = []
         if self.chatinstance.messages[-1]["content"]:
             self.chatinstance.add({"type": "text", "text": "额外内容结束\n---"})
@@ -487,7 +510,7 @@ class MainWindow:
     def _get_active_window_loop(self):
         while self.is_feature_screenshot_enable:
             active_window = gw.getActiveWindow()
-            if active_window and active_window.title not in ["设置", "添加多媒体", "历史记录", "托盘小工具", ""]:
+            if active_window and active_window.title not in ["设置", "添加多媒体", "历史记录", "托盘小工具", "", None]:
                 self.last_active_window = active_window
             time.sleep(1)
 
@@ -501,13 +524,14 @@ class MainWindow:
         label.pack(pady=10)
         if hasattr(self, 'chatinstance'):
             self.archive_chat()
-        with open("histories.json", "w", encoding="utf-8") as f:
-            json.dump(self.histories, f, ensure_ascii=False, indent=4)
-        with open("settings.json", "w", encoding="utf-8") as f:
+        with open('saves/history_titles.json', 'w', encoding='utf-8') as f:
+            json.dump(self.history_titles, f, ensure_ascii=False, indent=4)
+        with open("saves/settings.json", "w", encoding="utf-8") as f:
             settings = {
                 "is_feature_screenshot_enable": self.is_feature_screenshot_enable,
                 "is_feature_clipboard_enable": self.is_feature_clipboard_enable,
-                "is_feature_auto_vision_mode": self.is_feature_auto_vision_mode,
+                "is_feature_auto_vision_mode_enable": self.is_feature_auto_vision_mode_enable,
+                "is_feature_browser_backend_enable": self.is_feature_browser_backend_enable,
                 "main_model": self.main_model,
                 "assist_model": self.assist_model,
                 "vision_model": self.vision_model,
@@ -525,7 +549,7 @@ class TrayIcon:
             MenuItem("添加...", self.mainwindow.open_add_multimedia),
             MenuItem("历史记录", self.mainwindow.open_history),
             MenuItem("设置", self.mainwindow.open_settings),
-            MenuItem("退出", self.on_exit)
+            MenuItem("退出", self.on_exit)  
         ))
     
     def on_exit(self):
@@ -564,7 +588,7 @@ class ChatInstance:
                 if not is_thinking:
                     is_thinking = True
                     self.mainwindow.insert_message("\n---Thinking---\n", tag="thinking")
-                self.mainwindow.insert_message(delta.reasoning_content)
+                self.mainwindow.insert_message(delta.reasoning_content, tag="thinking")
             elif hasattr(delta, "content") and delta.content:
                 if is_thinking and not is_answering:
                     is_answering = True
@@ -590,143 +614,116 @@ class ChatInstance:
                 image_messages.append(messages)
         self.messages[-1]["content"] = image_messages + [{"type": "text", "text": "\n".join([i["text"] for i in text_messages])}]
 
-def ask_ai(system: str, user: str, model: str = "deepseek-chat", prefix: str = "", stop: str = ""):
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-    if prefix:
-        messages.append({"role": "assistant", "content": prefix, "prefix": True})
-    params = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0,
-        "stream": False,
-    }
-    if stop:
-        params["stop"] = stop
-    response = get_oclient(model).chat.completions.create(**params)
-    return response.choices[0].message.content
+class WebServer:
+    def __init__(self, mainwindow: MainWindow):
+        self.mainwindow = mainwindow
+        self.stop_sign = False
+        self.app = Flask(__name__)
+        CORS(self.app)  # 允许跨域请求
 
-def capture_window_no_border(window: gw.Window) -> Image.Image | None:
-    def capture_window(window):
-        hwnd = window._hWnd
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-        hwndDC = win32gui.GetWindowDC(hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-        saveBitMap = win32ui.CreateBitmap()
-        saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-        saveDC.SelectObject(saveBitMap)
-        result = windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0x00000002)
-        if result != 1:
-            result = windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0)
-            if result != 1:
-                return None
-        bmp_info = saveBitMap.GetInfo()
-        bmp_str = saveBitMap.GetBitmapBits(True)
-        im = Image.frombuffer(
-            'RGBA', (bmp_info['bmWidth'], bmp_info['bmHeight']), bmp_str, 'raw', 'BGRA', 0, 1
-        )
-        im = im.convert('RGB')
-        win32gui.DeleteObject(saveBitMap.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwndDC)
-        return im
-
-    def crop_black_borders(image):
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        width, height = image.size
-        if width == 0 or height == 0:
-            return image
-        pixels = image.load()
-        top = 0
-        for y in range(height):
-            for x in range(width):
-                if pixels[x, y] != (0, 0, 0):
-                    top = y
-                    break
-            else:
-                continue
-            break
-        bottom = height - 1
-        for y in range(height - 1, -1, -1):
-            for x in range(width):
-                if pixels[x, y] != (0, 0, 0):
-                    bottom = y
-                    break
-            else:
-                continue
-            break
-        left = 0
-        for x in range(width):
-            for y in range(height):
-                if pixels[x, y] != (0, 0, 0):
-                    left = x
-                    break
-            else:
-                continue
-            break
-        right = width - 1
-        for x in range(width - 1, -1, -1):
-            for y in range(height):
-                if pixels[x, y] != (0, 0, 0):
-                    right = x
-                    break
-            else:
-                continue
-            break
-        if left >= right or top >= bottom:
-            return image
-        cropped_image = image.crop((left, top, right + 1, bottom + 1))
-        return cropped_image
-    return crop_black_borders(capture_window(window))
-
-def ocr_image_azure(image: Image.Image) -> str:
-    # 将 PIL Image 转换为 PNG 字节流
-    if models["azure-computer-vision"]["url"] == "xxx":
-        raise Exception("请配置 Azure Computer Vision 的 URL 和 Ocp-Apim-Subscription-Key。如果没有，保持自动视觉模式开启。")
+        @self.app.route('/receive', methods=['POST'])
+        def receive_text():
+            # 解析表单数据
+            text = request.form.get('text', '')
+            url = request.form.get('url', '')
+            title = request.form.get('title', '')
+            
+            print(f"收到来自: {url}")
+            threading.Thread(target=self._process_recieved_data, args=(text, url, title)).start()
+            
+            return 'OK', 200
     
-    img_byte_arr = BytesIO()
-    image.save(img_byte_arr, format='PNG')
-    img_byte_arr = img_byte_arr.getvalue()
+    def _process_recieved_data(self, text, url, title):
+        domain_regex = r"^(?:https?:)?(?:\/\/)?([^\/\?:]+)(?:[\/\?:].*)?$"
+        domain = re.search(domain_regex, url).group(1)
+        try:
+            match domain:
+                case "music.163.com":
+                    song_id = re.search(r"id=(\d+)", url).group(1)
+                    song_info = get_netease_music_details_text(song_id)
+                    self.mainwindow.manual_extra_data.append({"description": "网易云音乐: " + title, "content": {"type": "text", "text": f"```经过清洗的网易云音乐网页: {title}\n{song_info}\n```"}})
+                    if hasattr(self.mainwindow, 'add_listbox'):
+                        self.mainwindow.add_listbox.insert(tk.END, "网易云音乐: " + title)
+                case "b23.tv" | "bilibili.com" | "www.bilibili.com":
+                    video_data = get_bili_text(url)
+                    video_info = f'''标题: {video_data["title"]}\n简介: {video_data["desc"]}\n标签: {video_data["tag"]}\n字幕: \n{video_data["text"]}'''
+                    self.mainwindow.manual_extra_data.append({"description": "哔哩哔哩视频: " + title, "content": {"type": "text", "text": f"```经过清洗的哔哩哔哩网页: {title}\n{video_info}\n```"}})
+                    if hasattr(self.mainwindow, 'add_listbox'):
+                        self.mainwindow.add_listbox.insert(tk.END, "哔哩哔哩视频: " + title)
+                case _:
+                    self.mainwindow.manual_extra_data.append({"description": "网页: " + title, "content": {"type": "text", "text": f"```网页: {title}\n{text}\n```"}})
+                    if hasattr(self.mainwindow, 'add_listbox'):
+                        self.mainwindow.add_listbox.insert(tk.END, "网页: " + title)
+        except:
+            self.mainwindow.manual_extra_data.append({"description": "网页: " + title, "content": {"type": "text", "text": f"```网页: {title}\n{text}\n```"}})
+            if hasattr(self.mainwindow, 'add_listbox'):
+                self.mainwindow.add_listbox.insert(tk.END, "网页: " + title)
     
-    data = requests.post(
-        url=models["azure-computer-vision"]["url"],
-        headers={
-            "Ocp-Apim-Subscription-Key": models["azure-computer-vision"]["Ocp-Apim-Subscription-Key"],
-            "Content-Type": "application/octet-stream",
-        },
-        params={
-            "features": "read"
-        },
-        data=img_byte_arr
-    ).json()
-    if "error" in data:
-        raise Exception(data["error"]["message"])
-    lines = data["readResult"]["blocks"][0]
-    text = ""
-    for line in lines['lines']:
-        text += line['text'] + "\n"
-    return text
+    def run_server(self):
+        self.server = make_server('localhost', 24981, self.app)
+        self.server_thread = threading.Thread(target=self.server.serve_forever)
+        self.server_thread.daemon = True
+        self.server_thread.start()
 
-def image_to_b64(image: Image.Image) -> str:
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    img_byte_arr = BytesIO()
-    image.save(img_byte_arr, format='JPEG', quality=80)
-    img_byte_arr = img_byte_arr.getvalue()
-    return base64.b64encode(img_byte_arr).decode('utf-8')
-
-def get_oclient(model) -> OpenAI:
-    if model not in oclients:
-        oclients[model] = OpenAI(
-            base_url=models[model]["url"],
-            api_key=models[model]["api_key"],
-        )
-    return oclients[model]
-
+class LRUCache:
+    def __init__(self, capacity=50, allow_reverse=False):
+        self.capacity = capacity
+        self.cache = OrderedDict()
+        self.allow_reverse = allow_reverse
+        # 只有开启反向查询时才初始化字典，节省空间
+        self.rev_cache = {} if allow_reverse else None
+    
+    def get(self, key):
+        if key not in self.cache:
+            return None
+        
+        # 移动到最新位置 (MRU)
+        self.cache.move_to_end(key)
+        val = self.cache[key]
+        
+        # 如果支持反向查询，既然这个key刚被访问过，它就是这个值对应的“最新”键
+        if self.allow_reverse:
+            self.rev_cache[val] = key
+            
+        return val
+    
+    def put(self, key, value):
+        if key in self.cache:
+            # key 已存在：移动到最新位置
+            self.cache.move_to_end(key)
+            
+            # 处理反向索引更新
+            if self.allow_reverse:
+                old_val = self.cache[key]
+                # 如果值发生了变化，且旧值的反向索引指向当前key，则删除旧索引
+                if old_val != value and self.rev_cache.get(old_val) == key:
+                    del self.rev_cache[old_val]
+        else:
+            # key 不存在：检查容量
+            if len(self.cache) >= self.capacity:
+                # 弹出最旧项 (FIFO)
+                old_k, old_v = self.cache.popitem(last=False)
+                
+                # 如果被删除的键是其值的反向索引代表，则清理反向索引
+                # 注意：如果 rev_cache[old_v] 指向的是别的（更新的）key，则不删除
+                if self.allow_reverse and self.rev_cache.get(old_v) == old_k:
+                    del self.rev_cache[old_v]
+        
+        # 更新主缓存
+        self.cache[key] = value
+        
+        # 更新反向索引：无论 value 是否重复，当前 key 都是该 value 的“最新”代表
+        if self.allow_reverse:
+            self.rev_cache[value] = key
+            
+    def find_key(self, value):
+        """
+        通过值反向查询键。
+        如果多个键对应同一个值，返回最新的（最后被 put 或 get 的）那个键。
+        """
+        if not self.allow_reverse:
+            return None
+        return self.rev_cache.get(value)
     
 def run():
     mainwindow = MainWindow()
