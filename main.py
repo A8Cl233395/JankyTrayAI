@@ -106,14 +106,14 @@ class MainWindow:
         user_input = self.input_area.get("1.0", tk.END).strip()
         self.input_area.delete("1.0", tk.END)  # 清空输入框
         if user_input:
+            if not hasattr(self, 'chatinstance'):
+                if bool(self.display_area.get("1.0", "end-1c").strip()): # 已选择历史记录，懒加载，不初始化
+                    self.new_chat()
+                else:
+                    self.new_chat(user_input)
             self.insert_message(f"你: ", "user")
             self.insert_message(user_input+"\n")
             self.display_area.see(tk.END)  # 滚动到最新消息
-            if not hasattr(self, 'chatinstance'):
-                if bool(self.display_area.get("1.0", "end-1c").strip()):
-                    self.new_chat(user_input)
-                else: # 已选择历史记录，懒加载，不初始化
-                    self.new_chat()
             self.generate_response_thread = threading.Thread(target=self._generate_and_insert_response, args=(user_input,))
             self.generate_response_thread.start()
 
@@ -315,6 +315,7 @@ class MainWindow:
     
     def new_chat(self, user_input = None):
         if user_input:
+            print(user_input)
             self.chatinstance = ChatInstance(self.main_model, mainwindow=self)
             self.current_chat_index = 0
             for i in self.manual_extra_data:
