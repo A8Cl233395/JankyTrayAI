@@ -36,6 +36,8 @@ class MainWindow:
         if not os.path.exists('saves/histories'):
             os.makedirs('saves/histories')
         self.history_files = os.listdir('saves/histories')
+        self.history_files = sorted(self.history_files, key=lambda x: int(x))
+
         self.history_cache = LRUCache(50)
 
         if os.path.exists('saves/history_titles.json'):
@@ -107,13 +109,13 @@ class MainWindow:
         user_input = self.input_area.get("1.0", tk.END).strip()
         self.input_area.delete("1.0", tk.END)  # 清空输入框
         if user_input:
+            self.insert_message(f"你: ", "user")
+            self.insert_message(user_input+"\n")
             if not hasattr(self, 'chatinstance'):
-                if bool(self.display_area.get("1.0", "end-1c").strip()): # 已选择历史记录，懒加载，不初始化
+                if self.current_chat_index != -1: # 已选择历史记录，懒加载，不初始化
                     self.new_chat()
                 else:
                     self.new_chat(user_input)
-            self.insert_message(f"你: ", "user")
-            self.insert_message(user_input+"\n")
             self.display_area.see(tk.END)  # 滚动到最新消息
             self.generate_response_thread = threading.Thread(target=self._generate_and_insert_response, args=(user_input,))
             self.generate_response_thread.start()
@@ -130,7 +132,6 @@ class MainWindow:
         self.insert_message(f"AI: ", "assistant")
         self.chatinstance()
         self.insert_message("\n")
-        self.display_area.see(tk.END)  # 滚动到最新消息
 
     def _generate_and_insert_chat_title(self, user_input: str):
         title = ask_ai("你是一个专业的对话标题生成器，你需要根据用户的输入生成一句对话标题。", user_input, model=self.assist_model, prefix="```标题\n", stop="\n```")
@@ -256,7 +257,7 @@ class MainWindow:
         selection = self.history_listbox.curselection()
         if selection:
             index = selection[0]
-            self.load_history(index)
+            self.load_history_and_focus(index)
     
     def _remove_history(self, event):
         """删除选中的历史记录"""
@@ -269,11 +270,12 @@ class MainWindow:
                 del self.chatinstance
             self.display_area.delete(1.0, tk.END)
             filename = self.history_files.pop(index)
-            os.remove(f'saves/histories/{filename}')
-            self.current_chat_index = max(0, self.current_chat_index - 1)
-            self.load_history(self.current_chat_index)
+            if os.path.exists(f'saves/histories/{filename}'):
+                os.remove(f'saves/histories/{filename}')
+            self.current_chat_index = -1
+            self.load_history_and_focus(max(0, self.current_chat_index - 1)) # 如果不需要直接加载消息，只需要留空，删除这一行
 
-    def load_history(self, index: int):
+    def load_history_and_focus(self, index: int):
         if index == self.current_chat_index:
             self.display_area.see(tk.END)  # 滚动到最新消息
             return
@@ -344,7 +346,7 @@ class MainWindow:
     def on_newchat(self):
         self.archive_chat()
         self.display_area.delete(1.0, tk.END)
-        self.current_chat_index = 0
+        self.current_chat_index = -1
     
     def open_add_multimedia(self):
         if hasattr(self, 'add_window'):  # 如果窗口已打开
@@ -644,17 +646,17 @@ class WebServer:
                     song_info = get_netease_music_details_text(song_id)
                     self.mainwindow.manual_extra_data.append({"description": "网易云音乐: " + title, "content": {"type": "text", "text": f"```经过清洗的网易云音乐网页: {title}\n{song_info}\n```"}})
                     if hasattr(self.mainwindow, 'add_listbox'):
-                        self.mainwindow.add_listbox.insert(tk.END, "网易云音乐: " + title)
+                        self.mainwindow.add_window.after(0, self.mainwindow.add_listbox.insert, tk.END, "网易云音乐: " + title)
                 case "b23.tv" | "bilibili.com" | "www.bilibili.com":
                     video_data = get_bili_text(url)
                     video_info = f'''标题: {video_data["title"]}\n简介: {video_data["desc"]}\n标签: {video_data["tag"]}\n字幕: \n{video_data["text"]}'''
                     self.mainwindow.manual_extra_data.append({"description": "哔哩哔哩视频: " + title, "content": {"type": "text", "text": f"```经过清洗的哔哩哔哩网页: {title}\n{video_info}\n```"}})
                     if hasattr(self.mainwindow, 'add_listbox'):
-                        self.mainwindow.add_listbox.insert(tk.END, "哔哩哔哩视频: " + title)
+                        self.mainwindow.add_window.after(0, self.mainwindow.add_listbox.insert, tk.END, "哔哩哔哩视频: " + title)
                 case _:
                     self.mainwindow.manual_extra_data.append({"description": "网页: " + title, "content": {"type": "text", "text": f"```网页: {title}\n{text}\n```"}})
                     if hasattr(self.mainwindow, 'add_listbox'):
-                        self.mainwindow.add_listbox.insert(tk.END, "网页: " + title)
+                        self.mainwindow.add_window.after(0, self.mainwindow.add_listbox.insert, tk.END, "网页: " + title)
         except:
             self.mainwindow.manual_extra_data.append({"description": "网页: " + title, "content": {"type": "text", "text": f"```网页: {title}\n{text}\n```"}})
             if hasattr(self.mainwindow, 'add_listbox'):
