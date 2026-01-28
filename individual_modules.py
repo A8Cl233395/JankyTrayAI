@@ -8,7 +8,7 @@ import pygetwindow as gw
 from ctypes import windll
 from PIL import Image, ImageGrab
 from collections import OrderedDict
-from flask import Flask, request
+from flask import Flask, request, jsonify, send_from_directory, Response, make_response
 from flask_cors import CORS
 from werkzeug.serving import make_server
 import os
@@ -24,23 +24,9 @@ import win32con
 from hashlib import md5
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import re
-from collections import OrderedDict
-from flask import Flask, request
-from flask_cors import CORS
-from werkzeug.serving import make_server
-import os
-import time
-import chardet
-import tkinter as tk
-from tkinter import scrolledtext, ttk
-import threading
-from pystray import Icon, MenuItem, Menu
-import json
-import win32clipboard
-import win32con
-from hashlib import md5
-from tkinterdnd2 import DND_FILES, TkinterDnD
-import re
+import sqlite3
+import multiprocessing
+from queue import Queue
 
 oclients = {}
 
@@ -182,12 +168,12 @@ def image_to_b64(image: Image.Image) -> str:
     return base64.b64encode(img_byte_arr).decode('utf-8')
 
 def get_oclient(model) -> OpenAI:
-    if model not in oclients:
-        oclients[model] = OpenAI(
+    if models[model]["url"] not in oclients:
+        oclients[models[model]["url"]] = OpenAI(
             base_url=models[model]["url"],
             api_key=models[model]["api_key"],
         )
-    return oclients[model]
+    return oclients[models[model]["url"]]
 
 def get_bili_text(user_input):
     if user_input.startswith("BV") or user_input.startswith("av") or user_input.startswith("bv"):
@@ -280,3 +266,105 @@ def get_netease_music_details_text(song_id, comment_limit=5):
     combined += f"歌词:\n```\n{combined_lyrics_text}\n```\n"
     combined += f"热评:\n```\n{comments_text}\n```"
     return combined
+
+class ChatInstance:
+    def __init__(self, model = "deepseek-chat", vision_model = "qwen3-vl-plus-2025-12-19", messages: list[dict] | None = None, mainwindow = None):
+        self.oclient = get_oclient(model)
+        self.model = model
+        self.vision_model = vision_model
+        self.messages: list[dict] = messages if messages else []
+        self.contain_image = False
+        if self.messages:
+            for message in self.messages:
+                if message['role'] == 'user' and message['content'][0]['type'] == 'image_url':
+                    self.contain_image = True
+                    self.model = self.vision_model
+                    self.oclient = get_oclient(self.model)
+                    break
+        if mainwindow:
+            self.mainwindow = mainwindow
+            self.function = self._direct_mode
+        else:
+            self.function = self._yield_mode
+
+    def ai(self):
+        completion = self.oclient.chat.completions.create(
+            model=self.model,
+            messages=self.messages,
+            temperature=1,
+            stream=True
+        )
+        return completion
+    
+    def __call__(self):
+        return self.function()
+    
+    def _direct_mode(self):
+        completion = self.ai()
+        full_content = ""
+        is_thinking = False
+        is_answering = False
+        self.tool_calls = []
+        for chunk in completion:
+            delta = chunk.choices[0].delta
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                if not is_thinking:
+                    is_thinking = True
+                    self.mainwindow.insert_message("\n---Thinking---\n", tag="thinking")
+                self.mainwindow.insert_message(delta.reasoning_content, tag="thinking")
+            elif hasattr(delta, "content") and delta.content:
+                if is_thinking and not is_answering:
+                    is_answering = True
+                    self.mainwindow.insert_message("\n---Answering---\n", tag="answering")
+                full_content += delta.content
+                self.mainwindow.insert_message(delta.content)
+        self.messages.append({"role": "assistant", "content": full_content})
+
+    def _yield_mode(self):
+        completion = self.ai()
+        full_content = ""
+        is_thinking = False
+        is_answering = False
+        self.tool_calls = []
+        for chunk in completion:
+            delta = chunk.choices[0].delta
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                if not is_thinking:
+                    is_thinking = True
+                    yield {"signal": 1}
+                yield {"data": delta.reasoning_content}
+            elif hasattr(delta, "content") and delta.content:
+                if is_thinking and not is_answering:
+                    is_answering = True
+                    yield {"signal": 0}
+                full_content += delta.content
+                yield {"data": delta.content}
+        self.messages.append({"role": "assistant", "content": full_content})
+
+    def new(self):
+        self.messages.append({"role": "user", "content": []})
+    
+    def add(self, content: dict):
+        self.messages[-1]["content"].append(content)
+        if not self.contain_image and content["type"] == "image_url":
+            self.contain_image = True
+            self.model = self.vision_model
+            self.oclient = get_oclient(self.model)
+    
+    def merge(self):
+        """合并连续的文本消息"""
+        text_messages = []
+        image_messages = []
+        for message in self.messages[-1]["content"]:
+            if message["type"] == "text":
+                text_messages.append(message)
+            else:
+                image_messages.append(message)
+        self.messages[-1]["content"] = image_messages + [{"type": "text", "text": "\n".join([i["text"] for i in text_messages])}]
+    
+    def set(self, content: list[dict]):
+        self.messages[-1]["content"] = content
+        if not self.contain_image and content[0]["type"] == "image_url":
+            self.contain_image = True
+            self.model = self.vision_model
+            self.oclient = get_oclient(self.model)

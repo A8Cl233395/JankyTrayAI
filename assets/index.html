@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chat Interface</title>
+    <!-- Tailwind CSS (样式库) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 配置 Tailwind 的深色模式跟随系统 -->
+    <script>
+        tailwind.config = {
+            darkMode: 'media', 
+            theme: {
+                extend: {
+                    colors: {
+                        gray: {
+                            750: '#2d2d3a', // 自定义深色背景
+                            850: '#1a1a23',
+                            950: '#0f0f15',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Highlight.js (代码高亮) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css">
+    <!-- FontAwesome (图标) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- 自定义样式 -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-gray-100 dark:bg-gray-950 text-gray-900 dark:text-gray-100 h-screen overflow-hidden">
+
+    <div id="app" class="flex h-full" v-cloak>
+        
+        <!-- 左侧侧边栏 -->
+        <aside 
+            class="transition-all duration-300 flex flex-col border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+            :class="isSidebarCollapsed ? 'w-16' : 'w-64'"
+        >
+            <!-- 顶部操作区 -->
+            <div class="p-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+                <button @click="toggleSidebar" class="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <button 
+                    @click="startNewChat" 
+                    class="flex-1 ml-2 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded shadow-sm transition-all overflow-hidden whitespace-nowrap"
+                    v-if="!isSidebarCollapsed"
+                >
+                    <i class="fas fa-plus"></i>
+                    <span>发起新对话</span>
+                </button>
+                <button 
+                    @click="startNewChat" 
+                    class="ml-2 p-2 bg-blue-600 hover:bg-blue-700 text-white rounded shadow-sm"
+                    v-else
+                >
+                    <i class="fas fa-plus"></i>
+                </button>
+            </div>
+
+            <!-- 历史记录列表 -->
+            <div 
+                class="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-2" 
+                ref="historyContainer"
+                @scroll="handleHistoryScroll"
+            >
+                <div 
+                    v-for="chat in historyList" 
+                    :key="chat.id"
+                    @click="loadChat(chat.id)"
+                    class="p-3 rounded cursor-pointer transition-colors text-sm truncate select-none group relative"
+                    :class="currentChatId === chat.id ? 'bg-gray-100 dark:bg-gray-800 font-medium' : 'hover:bg-gray-50 dark:hover:bg-gray-850 text-gray-600 dark:text-gray-400'"
+                    :title="chat.title"
+                >
+                    <i class="fas fa-message mr-2 opacity-70"></i>
+                    <span v-if="!isSidebarCollapsed">{{ chat.title }}</span>
+                </div>
+                
+                <!-- 加载指示器 -->
+                <div v-if="isLoadingHistory" class="text-center py-2 text-xs text-gray-500">
+                    <i class="fas fa-spinner fa-spin"></i> 加载中...
+                </div>
+            </div>
+        </aside>
+
+        <!-- 右侧聊天区域 -->
+        <main class="flex-1 flex flex-col h-full relative bg-white dark:bg-gray-950">
+            
+            <!-- 消息列表区 -->
+            <div 
+                class="flex-1 overflow-y-auto custom-scrollbar p-4 md:p-8 scroll-smooth" 
+                ref="chatContainer"
+            >
+                <!-- 欢迎/空状态 -->
+                <div v-if="messages.length === 0 && !isGenerating" class="h-full flex flex-col items-center justify-center text-gray-400 opacity-50">
+                    <i class="fas fa-robot text-6xl mb-4"></i>
+                    <p>准备好开始对话了吗？</p>
+                </div>
+
+                <!-- 消息循环 -->
+                <div v-for="(msg, index) in messages" :key="index" class="mb-8 max-w-4xl mx-auto animate-fade-in">
+                    
+                    <!-- 用户消息 -->
+                    <div v-if="msg.role === 'user'" class="flex justify-end">
+                        <div class="bg-gray-100 dark:bg-gray-800 rounded-2xl px-5 py-3 max-w-[85%]">
+                            <!-- 图片展示 -->
+                            <div v-if="msg.images && msg.images.length" class="flex gap-2 mb-2 flex-wrap justify-end">
+                                <img v-for="(img, i) in msg.images" :key="i" :src="img" class="max-h-48 rounded-lg border border-gray-300 dark:border-gray-700">
+                            </div>
+                            <div class="whitespace-pre-wrap text-gray-800 dark:text-gray-200">{{ msg.text }}</div>
+                        </div>
+                    </div>
+
+                    <!-- AI / 工具 消息 -->
+                    <div v-else class="flex gap-4 items-start">
+                        <div class="w-8 h-8 rounded-full bg-green-600 flex items-center justify-center text-white shrink-0 mt-1">
+                            <i v-if="msg.role === 'tool'" class="fas fa-wrench text-xs"></i>
+                            <i v-else class="fas fa-robot text-xs"></i>
+                        </div>
+                        <div class="flex-1 min-w-0 space-y-2">
+                            
+                            <!-- 工具调用显示 -->
+                            <div v-if="msg.role === 'tool'" class="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded p-2 text-sm font-mono text-gray-500">
+                                <div class="flex items-center gap-2">
+                                    <i class="fas fa-terminal"></i> 调用工具: {{ msg.content }}
+                                </div>
+                            </div>
+
+                            <!-- AI 回答内容 (包含思考和正文) -->
+                            <template v-else>
+                                <!-- 思考过程 (如果有) -->
+                                <div v-if="msg.think" class="border-l-2 border-gray-300 dark:border-gray-700 pl-3 my-2">
+                                    <div 
+                                        @click="msg.isThinkingCollapsed = !msg.isThinkingCollapsed"
+                                        class="cursor-pointer text-xs font-bold text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 flex items-center gap-1 select-none"
+                                    >
+                                        <i class="fas" :class="msg.isThinkingCollapsed ? 'fa-chevron-right' : 'fa-chevron-down'"></i>
+                                        深度思考过程
+                                    </div>
+                                    <div v-show="!msg.isThinkingCollapsed" class="mt-2 text-gray-500 dark:text-gray-400 text-sm italic markdown-body" v-html="renderMarkdown(msg.think)"></div>
+                                </div>
+
+                                <!-- 正文 -->
+                                <div class="markdown-body text-gray-800 dark:text-gray-200" v-html="renderMarkdown(msg.text)"></div>
+                                
+                                <!-- 打字机光标 -->
+                                <span v-if="msg.isStreaming" class="inline-block w-2 h-4 bg-gray-400 animate-pulse align-middle ml-1"></span>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 底部输入区域 -->
+            <div class="p-4 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 z-10 transition-all duration-500" :class="messages.length === 0 ? 'absolute bottom-[40vh] left-0 right-0 border-none bg-transparent' : ''">
+                <div class="max-w-4xl mx-auto relative">
+                    <!-- 预览图片区域 -->
+                    <div v-if="inputImages.length > 0" class="flex gap-2 mb-2 px-2 overflow-x-auto">
+                        <div v-for="(img, idx) in inputImages" :key="idx" class="relative group">
+                            <img :src="img" class="h-16 w-16 object-cover rounded border border-gray-300 dark:border-gray-700">
+                            <button @click="removeImage(idx)" class="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 输入框容器 -->
+                    <div class="relative bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all">
+                        <textarea 
+                            v-model="inputText"
+                            @keydown.enter.prevent="handleEnterKey"
+                            placeholder="输入消息... (Shift+Enter 换行)" 
+                            class="w-full bg-transparent border-none focus:ring-0 resize-none py-3 pl-4 pr-12 max-h-48 custom-scrollbar text-gray-800 dark:text-gray-100 placeholder-gray-400"
+                            rows="1"
+                            ref="inputBox"
+                            @input="autoResizeInput"
+                        ></textarea>
+                        
+                        <!-- 底部工具栏 -->
+                        <div class="absolute bottom-2 right-2 flex items-center gap-2">
+                            <label class="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-2 rounded transition-colors">
+                                <input type="file" accept="image/*" multiple @change="handleImageUpload" class="hidden">
+                                <i class="fas fa-image"></i>
+                            </label>
+                            <button 
+                                @click="sendMessage" 
+                                :disabled="(!inputText.trim() && inputImages.length === 0) || isGenerating"
+                                class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg p-2 w-8 h-8 flex items-center justify-center transition-colors"
+                            >
+                                <i v-if="isGenerating" class="fas fa-stop"></i>
+                                <i v-else class="fas fa-paper-plane text-xs"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 引入 Vue 3, Marked, Highlight.js -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

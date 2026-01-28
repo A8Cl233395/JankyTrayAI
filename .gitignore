@@ -1,6 +1,8 @@
 models.json
 settings.json
-history_titles.json
+saves/history_titles.db
+saves/history_titles.db-shm
+saves/history_titles.db-wal
 saves/histories/*
 indev
 __pycache__
