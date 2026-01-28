@@ -6,6 +6,11 @@ def _run_server(main_model, vision_model, assist_model):
     chatinstances: dict[int, ChatInstance] = {}
     timeouts: dict[int, int] = {}
     conn = sqlite3.connect('saves/history_titles.db', check_same_thread=False, timeout=5)
+    model_config = {
+        'main_model': main_model,
+        'vision_model': vision_model,
+        'assist_model': assist_model,
+    }
     with conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA busy_timeout = 5000")
@@ -15,7 +20,6 @@ def _run_server(main_model, vision_model, assist_model):
     def handle_options():
         if request.method == 'OPTIONS':
             response = jsonify()
-            response.headers.add('Access-Control-Allow-Origin', 'http://127.0.0.1:3417')
             response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
             response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
             response.headers.add('Access-Control-Max-Age', '86400')  # 缓存24小时
@@ -79,7 +83,7 @@ def _run_server(main_model, vision_model, assist_model):
     
     def _generate_and_insert(queue: Queue, user_inputs: str, chat_id: int, title_thread: threading.Thread = None):
         if chat_id not in chatinstances:
-            chatinstances[chat_id] = ChatInstance(model=main_model, vision_model=vision_model)
+            chatinstances[chat_id] = ChatInstance(model=model_config["main_model"], vision_model=model_config["vision_model"])
         chatinstance = chatinstances[chat_id]
         chatinstance.new()
         chatinstance.set(user_inputs)
@@ -138,7 +142,7 @@ def _run_server(main_model, vision_model, assist_model):
             id = int(request_body["id"])
             if id not in chatinstances:
                 with open(f'saves/histories/{id // 1000}/{id % 1000}', 'r', encoding='utf-8') as f:
-                    chatinstances[id] = ChatInstance(model=main_model, vision_model=vision_model, messages=json.load(f))
+                    chatinstances[id] = ChatInstance(model=model_config["main_model"], vision_model=model_config["vision_model"], messages=json.load(f))
             threading.Thread(target=_generate_and_insert, args=(message_queue, request_body["content"], id)).start()
             if id not in timeouts:
                 threading.Thread(target=_timeout_checker, args=(id,)).start()
@@ -160,15 +164,14 @@ def _run_server(main_model, vision_model, assist_model):
     
     @app.route('/configure', methods=['POST'])
     def configure():
-        global main_model, vision_model, assist_model
         request_body = request.get_json()
         print(request_body)
         if "main_model" in request_body:
-            main_model = request_body["main_model"]
+            model_config["main_model"] = request_body["main_model"]
         if "vision_model" in request_body:
-            vision_model = request_body["vision_model"]
+            model_config["vision_model"] = request_body["vision_model"]
         if "assist_model" in request_body:
-            assist_model = request_body["assist_model"]
+            model_config["assist_model"] = request_body["assist_model"]
         return 'ok'
     
     @app.route('/alive')
@@ -190,7 +193,4 @@ def _run_server(main_model, vision_model, assist_model):
                 json.dump(chatinstances[i].messages, f, ensure_ascii=False)
         return 'ok'
 
-    app.run(debug=False, host='127.0.0.1', port=3417)
-
-if __name__ == '__main__':
-    _run_server("deepseek-chat", "qwen3-vl-plus-2025-12-19", "deepseek-chat")
+    app.run(debug=False, host='0.0.0.0', port=3417)

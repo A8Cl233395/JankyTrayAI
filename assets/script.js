@@ -1,6 +1,6 @@
 const { createApp, ref, onMounted, nextTick, onBeforeUnmount, watch } = Vue;
 
-const API_BASE = "http://localhost:3417";
+const API_BASE = location.origin;
 
 createApp({
     setup() {

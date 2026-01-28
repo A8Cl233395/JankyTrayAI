@@ -31,10 +31,6 @@
         "url": "https://api.deepseek.com/beta",
         "api_key": "xxx"
     },
-    "azure-computer-vision": {
-        "url": "https://REPLACE-THIS-WITH-UR-ENDPOINT.cognitiveservices.azure.com/computervision/imageanalysis:analyze?api-version=2024-02-01",
-        "Ocp-Apim-Subscription-Key": "xxx"
-    },
     "azure-speech-to-text": {
         "url": "https://eastus.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15",
         "Ocp-Apim-Subscription-Key": "xxx"

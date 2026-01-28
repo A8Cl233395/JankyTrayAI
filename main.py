@@ -202,6 +202,7 @@ class MainWindow:
             self.web_server.start()
         else:
             if hasattr(self, 'web_server'):
+                requests.get('http://127.0.0.1:3417/save-all')
                 self.web_server.terminate()
                 self.web_server.join(timeout=1)
                 del self.web_server
